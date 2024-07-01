@@ -48,9 +48,7 @@ io_playground read
 struct ReadArgs;
 
 impl ReadArgs {
-	fn run(&self) -> Result<()> {
-		Ok(())
-	}
+	fn run(&self) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone, Args)]
@@ -62,23 +60,39 @@ Examples:
 
 io_playground write
 ")]
-struct WriteArgs{
-	size: usize,
-	chunk_size: usize,
-	mode: BenchmarkIOType,
+struct WriteArgs {
+	/// The size of the file to write
+	#[arg(
+		short,
+		long,
+		group = "input",
+		default_value = "1GiB"
+	)]
+	size:       ReadableSize,
+	/// The size of the chunk to write
+	#[arg(
+		short,
+		long,
+		group = "input",
+		default_value = "1MiB"
+	)]
+	chunk_size: ReadableSize,
+	/// The mode of the benchmark
+	#[arg(
+		long,
+		short,
+		group = "input",
+		value_enum,
+		default_value = "rio"
+	)]
+	mode:       BenchmarkIOType,
 }
 
 impl WriteArgs {
 	fn run(self) -> Result<()> {
-		let cap = ReadableSize::gb(1);
-		let chunk_size = ReadableSize::mb(1);
-
-		let hairness = self.mode.new();
-
-		io_playground::tokio::benchmark_write(path, cap.as_bytes(), chunk_size.as_bytes())?;
-		let elapsed = start.elapsed();
-
-		println!("write {:?}, chunk_size {:?}, elapsed: {:?} ", cap, chunk_size, elapsed,);
+		let harness = self.mode.new()?;
+		let br = harness.seq_write(self.size, self.chunk_size)?;
+		println!("{:?}", br);
 		Ok(())
 	}
 }
@@ -86,8 +100,10 @@ impl WriteArgs {
 fn main() -> Result<()> {
 	let cli = Cli::parse();
 	match cli.commands {
-		Commands::Blocking(ba) => ba.run(),
-		Commands::Tokio(ta) => ta.run(),
+		Commands::Write(wa) => wa.run(),
+		_ => {
+			todo!()
+		}
 	}
 }
 

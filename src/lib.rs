@@ -18,6 +18,7 @@
 use std::{fs::File, os::{fd::OwnedFd, unix::fs::OpenOptionsExt}, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
+use clap::ValueEnum;
 use rand::random;
 use rustix::fs::{Mode, OFlags};
 
@@ -29,10 +30,11 @@ pub mod readable_size;
 pub mod rio;
 pub mod tokio;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ValueEnum)]
 pub enum BenchmarkIOType {
 	Blocking,
 	Tokio,
+	Rio,
 }
 
 impl BenchmarkIOType {
@@ -45,6 +47,10 @@ impl BenchmarkIOType {
 				Ok(Box::new(b))
 			}
 			BenchmarkIOType::Tokio => todo!(),
+			BenchmarkIOType::Rio => {
+				let r = rio::UringRIO::new(base_io_drive);
+				Ok(Box::new(r))
+			}
 		}
 	}
 }
@@ -124,7 +130,7 @@ impl BaseIODrive {
 	pub fn open_fd(&self) -> Result<OwnedFd> {
 		let path = self.opts.dir.as_path().join(format!("file-{}", random::<u64>()));
 
-		let mut flags = OFlags::RDONLY | OFlags::DIRECT;
+		let mut flags = OFlags::RWMODE | OFlags::DIRECT | OFlags::CREATE;
 		if self.opts.direct {
 			flags |= OFlags::DIRECT;
 		}

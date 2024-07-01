@@ -19,11 +19,15 @@ b: bench
 bench:
 	@cargo bench
 
+run:
+	@cargo run --bin io_playground --release
+
+
 build:
 	@cargo build --bin io_playground --release
 
 b-run:
-	@cargo run --release --bin io_playground blocking
+	@cargo run --release --bin io_playground write --mode=rio
 
 t-run:
 	@cargo run --release --bin io_playground tokio

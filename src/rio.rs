@@ -1,9 +1,16 @@
+use std::os::fd::AsRawFd;
 use bytes::Bytes;
 
 use crate::{readable_size::ReadableSize, BaseIODrive, BenchmarkIO, BenchmarkResult, IoOpts, OperationKind};
 
 pub struct UringRIO {
 	pub inner: BaseIODrive,
+}
+
+impl UringRIO {
+	pub fn new(base_iodrive: BaseIODrive) -> Self {
+		Self { inner: base_iodrive }
+	}
 }
 
 impl BenchmarkIO for UringRIO {
@@ -21,7 +28,8 @@ impl BenchmarkIO for UringRIO {
 		chunk_size: ReadableSize,
 	) -> anyhow::Result<BenchmarkResult> {
 		let ring = rio::new()?;
-		let fd = self.inner.open_fd()?;
+		let file = self.inner.open_file()?;
+		let fd = file.as_raw_fd();
 
 		let buf = Bytes::from(vec![1u8; chunk_size.as_bytes_usize()]);
 
@@ -35,7 +43,7 @@ impl BenchmarkIO for UringRIO {
 		}
 
 		for c in completions {
-			c.wait()?;
+			c.wait().expect("what fuck?");
 		}
 
 		let elapsed = start_at.elapsed();
