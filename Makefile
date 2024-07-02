@@ -27,7 +27,7 @@ build:
 	@cargo build --bin io_playground --release
 
 b-run:
-	@cargo run --release --bin io_playground write --mode=rio
+	@cargo run --release --bin io_playground bench
 
 t-run:
 	@cargo run --release --bin io_playground tokio

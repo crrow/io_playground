@@ -32,6 +32,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+	Bench(BenchArgs),
 	Read(ReadArgs),
 	Write(WriteArgs),
 }
@@ -62,29 +63,13 @@ io_playground write
 ")]
 struct WriteArgs {
 	/// The size of the file to write
-	#[arg(
-		short,
-		long,
-		group = "input",
-		default_value = "1GiB"
-	)]
+	#[arg(short, long, group = "input", default_value = "1GiB")]
 	size:       ReadableSize,
 	/// The size of the chunk to write
-	#[arg(
-		short,
-		long,
-		group = "input",
-		default_value = "1MiB"
-	)]
+	#[arg(short, long, group = "input", default_value = "1MiB")]
 	chunk_size: ReadableSize,
 	/// The mode of the benchmark
-	#[arg(
-		long,
-		short,
-		group = "input",
-		value_enum,
-		default_value = "rio"
-	)]
+	#[arg(long, short, group = "input", value_enum, default_value = "rio")]
 	mode:       BenchmarkIOType,
 }
 
@@ -92,7 +77,44 @@ impl WriteArgs {
 	fn run(self) -> Result<()> {
 		let harness = self.mode.new()?;
 		let br = harness.seq_write(self.size, self.chunk_size)?;
-		println!("{:?}", br);
+		println!("{}", br);
+		Ok(())
+	}
+}
+
+#[derive(Debug, Clone, Args)]
+#[command(flatten_help = true)]
+#[command(long_about = r"
+
+Run all test at the same time.
+Examples:
+
+io_playground bench
+")]
+struct BenchArgs {
+	/// The size of the file to write
+	#[arg(short, long, group = "input", default_value = "1GiB")]
+	size:       ReadableSize,
+	/// The size of the chunk to write
+	#[arg(short, long, group = "input", default_value = "1MiB")]
+	chunk_size: ReadableSize,
+}
+
+impl BenchArgs {
+	fn run(self) -> Result<()> {
+		for mode in BenchmarkIOType::ALL {
+			let mode_name = mode.as_ref();
+			let harness = mode.new()?;
+			let br = harness.seq_write(self.size, self.chunk_size)?;
+			println!("{mode_name}, {}", br);
+			let br = harness.seq_read(self.size, self.chunk_size)?;
+			println!("{mode_name}, {}", br);
+			let br = harness.rand_read(self.size, self.chunk_size)?;
+			println!("{mode_name}, {}", br);
+			let br = harness.concurrent_rand_read(self.size, self.chunk_size, 4)?;
+			println!("{mode_name}, {}", br);
+			break
+		}
 		Ok(())
 	}
 }
@@ -101,6 +123,7 @@ fn main() -> Result<()> {
 	let cli = Cli::parse();
 	match cli.commands {
 		Commands::Write(wa) => wa.run(),
+		Commands::Bench(ba) => ba.run(),
 		_ => {
 			todo!()
 		}
