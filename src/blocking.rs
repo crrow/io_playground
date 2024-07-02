@@ -42,6 +42,7 @@ impl BenchmarkIO for BlockingIO {
 			file.write(&buf)?;
 		}
 		let elapsed = start_at.elapsed();
+		file.sync_all()?;
 		Ok(BenchmarkResult { kind: OperationKind::SeqWrite, size, chunk_size, start_at, elapsed })
 	}
 

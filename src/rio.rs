@@ -1,4 +1,5 @@
 use std::os::fd::AsRawFd;
+
 use bytes::Bytes;
 
 use crate::{readable_size::ReadableSize, BaseIODrive, BenchmarkIO, BenchmarkResult, IoOpts, OperationKind};
@@ -8,9 +9,7 @@ pub struct UringRIO {
 }
 
 impl UringRIO {
-	pub fn new(base_iodrive: BaseIODrive) -> Self {
-		Self { inner: base_iodrive }
-	}
+	pub fn new(base_iodrive: BaseIODrive) -> Self { Self { inner: base_iodrive } }
 }
 
 impl BenchmarkIO for UringRIO {
@@ -43,8 +42,13 @@ impl BenchmarkIO for UringRIO {
 		}
 
 		for c in completions {
-			c.wait().expect("what fuck?");
+			let cnt = c.wait()?;
+			if cnt < buf.len() {
+				return Err(anyhow::anyhow!("write less than expected"));
+			}
 		}
+		let completion = ring.fsync(&file);
+		completion.wait()?;
 
 		let elapsed = start_at.elapsed();
 		Ok(BenchmarkResult { kind: OperationKind::SeqWrite, size, chunk_size, start_at, elapsed })
