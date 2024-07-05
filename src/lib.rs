@@ -19,7 +19,7 @@ use std::{fmt::{Display, Formatter}, fs::File, os::{fd::{AsFd, AsRawFd, OwnedFd}
 
 use anyhow::Result;
 use clap::ValueEnum;
-use rand::random;
+use rand::{prelude::SliceRandom, random};
 use rustix::fs::{Mode, OFlags};
 use strum_macros::{AsRefStr, EnumIter, EnumString, FromRepr};
 
@@ -177,6 +177,27 @@ impl FileSystem {
 
 	pub fn generate_file_path(&self) -> PathBuf {
 		self.opts.dir.as_path().join(format!("file-{}", random::<u64>()))
+	}
+
+	pub fn make_random_access_offsets(size: ReadableSize, chunk_size: ReadableSize) -> Vec<u64> {
+		// prepare rand offset
+		let mut rng = rand::thread_rng();
+		let mut offsets =
+			(0..size / chunk_size).into_iter().map(|e| e * chunk_size.as_bytes()).collect::<Vec<u64>>();
+		offsets.shuffle(&mut rng);
+		offsets
+	}
+
+	pub fn make_random_access_offsets_queue(
+		size: ReadableSize,
+		chunk_size: ReadableSize,
+	) -> crossbeam_queue::ArrayQueue<u64> {
+		let offsets = Self::make_random_access_offsets(size, chunk_size);
+		let offsets_queue = crossbeam_queue::ArrayQueue::new(offsets.len());
+		for offset in offsets {
+			offsets_queue.push(offset).unwrap();
+		}
+		offsets_queue
 	}
 }
 

@@ -1,9 +1,8 @@
-use std::{io::{Read, Seek, SeekFrom}, time::Duration};
+use std::{io::{Read, Seek, SeekFrom}, rc::Rc, sync::Arc, time::Duration};
 
-use bytes::Bytes;
+use bytes::{buf::Reader, Bytes};
 use futures::{AsyncReadExt, AsyncWriteExt};
-use glommio::{io::{DmaFile, DmaStreamReaderBuilder, DmaStreamWriterBuilder}, LocalExecutorBuilder, Placement};
-use rand::{prelude::SliceRandom, thread_rng};
+use glommio::{enclose, io::{DmaFile, DmaStreamReaderBuilder, DmaStreamWriterBuilder}, LocalExecutorBuilder, Placement};
 
 use crate::{readable_size::ReadableSize, BenchmarkIO, BenchmarkResult, FileSystem, OperationMode};
 
@@ -103,7 +102,35 @@ impl BenchmarkIO for Glommio {
 		size: ReadableSize,
 		chunk_size: ReadableSize,
 	) -> anyhow::Result<BenchmarkResult> {
-		todo!()
+		let (file, path) = self.fs.open_file_for_reading(size.as_bytes_usize(), false)?;
+		let offsets = FileSystem::make_random_access_offsets(size, chunk_size);
+		drop(file);
+
+		let local_ex = LocalExecutorBuilder::new(Placement::Fixed(0))
+			.spin_before_park(Duration::from_millis(10))
+			.spawn(move || async move {
+				let file = Rc::new(DmaFile::open(&path).await.unwrap());
+				let time = std::time::Instant::now();
+
+				for offset in offsets {
+					let file = file.clone();
+					glommio::spawn_local(async move {
+						file.read_at(offset, chunk_size.as_bytes_usize()).await.unwrap();
+					})
+					.await;
+				}
+
+				BenchmarkResult {
+					mode: OperationMode::RandRead,
+					size,
+					chunk_size,
+					start_at: time,
+					elapsed: time.elapsed(),
+				}
+			})
+			.unwrap();
+		let r = local_ex.join().unwrap();
+		Ok(r)
 	}
 
 	fn concurrent_rand_read(
@@ -113,6 +140,44 @@ impl BenchmarkIO for Glommio {
 		parallelism: usize,
 	) -> anyhow::Result<BenchmarkResult> {
 		todo!()
+		// let (file, path) = self.fs.open_file_for_reading(size.as_bytes_usize(),
+		// false)?; let offsets = FileSystem::make_random_access_offsets(size,
+		// chunk_size); drop(file);
+		// let offsets_queue =
+		// Arc::new(FileSystem::make_random_access_offsets_queue(size, chunk_size));
+		//
+		// let local_ex = LocalExecutorBuilder::new(Placement::Fixed(0))
+		// 	.spin_before_park(Duration::from_millis(10))
+		// 	.spawn(move || async move {
+		// 		let file = Rc::new(DmaFile::open(&path));
+		// 		let time = std::time::Instant::now();
+		// 		let mut tasks = Vec::new();
+		//
+		// 		for _ in 0..parallelism {
+		// 			tasks.push(
+		// 				glommio::spawn_local(enclose! { (file) async move {
+		// 							let mut expected =
+		// Vec::with_capacity(chunk_size.as_bytes_usize()); 							while let
+		// Some(offset) = offsets_queue.pop(){ 								file.read(offset,
+		// chunk_size.as_bytes_usize(), &expected).await.unwrap(); 							}
+		// 				}})
+		// 				.detach(),
+		// 			);
+		// 		}
+		// 		for task in tasks {
+		// 			task.await;
+		// 		}
+		// 		BenchmarkResult {
+		// 			mode: OperationMode::ConcurrentRandRead(parallelism),
+		// 			size,
+		// 			chunk_size,
+		// 			start_at: time,
+		// 			elapsed: time.elapsed(),
+		// 		}
+		// 	})
+		// 	.unwrap();
+		// let r = local_ex.join().unwrap();
+		// Ok(r)
 	}
 
 	fn rand_write(

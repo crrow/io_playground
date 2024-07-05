@@ -18,9 +18,8 @@
 use std::{io::{Read, Seek, SeekFrom, Write}, os::unix::fs::FileExt, sync::{Arc, RwLock}, thread};
 
 use anyhow::Result;
-use rand::{prelude::SliceRandom, thread_rng};
 
-use crate::{readable_size::ReadableSize, BenchmarkIO, BenchmarkResult, FileSystem, FileSystemOption, OperationMode};
+use crate::{readable_size::ReadableSize, BenchmarkIO, BenchmarkResult, FileSystem, OperationMode};
 
 pub struct BlockingIO {
 	fs: FileSystem,
@@ -69,10 +68,7 @@ impl BenchmarkIO for BlockingIO {
 		let (mut file, path) = self.fs.open_file_for_reading(size.as_bytes_usize(), false)?;
 
 		// Benchmark random read
-		let mut rng = thread_rng();
-		let mut offsets =
-			(0..size / chunk_size).into_iter().map(|e| e * chunk_size.as_bytes()).collect::<Vec<u64>>();
-		offsets.shuffle(&mut rng);
+		let offsets = FileSystem::make_random_access_offsets(size, chunk_size);
 
 		let start = std::time::Instant::now();
 		let mut buffer = vec![0; chunk_size.as_bytes_usize()];
@@ -100,14 +96,7 @@ impl BenchmarkIO for BlockingIO {
 		let file = Arc::new(RwLock::new(file));
 
 		// prepare rand offset
-		let mut rng = thread_rng();
-		let mut offsets =
-			(0..size / chunk_size).into_iter().map(|e| e * chunk_size.as_bytes()).collect::<Vec<u64>>();
-		offsets.shuffle(&mut rng);
-		let offsets_queue = Arc::new(crossbeam_queue::ArrayQueue::new(offsets.len()));
-		for offset in offsets {
-			offsets_queue.push(offset).unwrap();
-		}
+		let offsets_queue = Arc::new(FileSystem::make_random_access_offsets_queue(size, chunk_size));
 
 		let mut join_handles = Vec::with_capacity(parallelism);
 		let start = std::time::Instant::now();

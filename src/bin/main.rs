@@ -113,7 +113,6 @@ impl BenchArgs {
 			println!("{mode_name}, {}", br);
 			let br = harness.concurrent_rand_read(self.size, self.chunk_size, 4)?;
 			println!("{mode_name}, {}", br);
-			break
 		}
 		Ok(())
 	}

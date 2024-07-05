@@ -9,6 +9,10 @@ fmt:
 	@hawkeye format
 	@buf format -w
 
+# Calculate code
+cloc:
+	@cloc . --exclude-dir=vendor,docs,tests,examples,build,scripts,tools,target,.venv
+
 .PHONY: c
 c: check
 check:
@@ -28,9 +32,6 @@ build:
 
 b-run:
 	@cargo run --release --bin io_playground bench
-
-t-run:
-	@cargo run --release --bin io_playground tokio
 
 fio_sync_write:
 	@fio --name=fiotest --rw=write --size=1G --bs=1m --group_reporting --ioengine=sync
