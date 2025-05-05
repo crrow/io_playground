@@ -1,17 +1,35 @@
+// Copyright 2024 Crrow <hahadaxigua@gmail.com>
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// Copyright Crrow <hahadaxigua@gmail.com> and the IO Playground contributors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{io::{Read, Seek, SeekFrom}, rc::Rc, sync::Arc, time::Duration};
 
-use bytes::{buf::Reader, Bytes};
+use bytes::{Bytes, buf::Reader};
 use futures::{AsyncReadExt, AsyncWriteExt};
-use glommio::{enclose, io::{DmaFile, DmaStreamReaderBuilder, DmaStreamWriterBuilder}, LocalExecutorBuilder, Placement};
+use glommio::{LocalExecutorBuilder, Placement, io::{DmaFile, DmaStreamReaderBuilder, DmaStreamWriterBuilder}};
 
-use crate::{readable_size::ReadableSize, BenchmarkIO, BenchmarkResult, FileSystem, OperationMode};
+use crate::{BenchmarkIO, BenchmarkResult, FileManager, OperationMode, Options, readable_size::ReadableSize};
 
 pub struct Glommio {
-	pub fs: FileSystem,
+	pub fs:   FileManager,
+	pub opts: Options,
 }
 
 impl Glommio {
-	pub fn new(fs: FileSystem) -> Self { Self { fs } }
+	pub fn new(fs: FileManager) -> Self { Self { opts: fs.opts.clone(), fs } }
 }
 
 impl BenchmarkIO for Glommio {
@@ -20,7 +38,8 @@ impl BenchmarkIO for Glommio {
 		size: ReadableSize,
 		chunk_size: ReadableSize,
 	) -> anyhow::Result<BenchmarkResult> {
-		let (file, path) = self.fs.open_file_for_reading(size.as_bytes_usize(), true)?;
+		let (file, path) =
+			self.fs.open_file_for_reading(size.as_bytes_usize(), true, self.opts.direct)?;
 		drop(file);
 		let mut buf = vec![0u8; chunk_size.as_bytes_usize()];
 		let mut bytes_read = 0;
@@ -102,8 +121,9 @@ impl BenchmarkIO for Glommio {
 		size: ReadableSize,
 		chunk_size: ReadableSize,
 	) -> anyhow::Result<BenchmarkResult> {
-		let (file, path) = self.fs.open_file_for_reading(size.as_bytes_usize(), false)?;
-		let offsets = FileSystem::make_random_access_offsets(size, chunk_size);
+		let (file, path) =
+			self.fs.open_file_for_reading(size.as_bytes_usize(), false, self.opts.direct)?;
+		let offsets = FileManager::make_random_access_offsets(size, chunk_size);
 		drop(file);
 
 		let local_ex = LocalExecutorBuilder::new(Placement::Fixed(0))
@@ -180,11 +200,11 @@ impl BenchmarkIO for Glommio {
 		// Ok(r)
 	}
 
-	fn rand_write(
+	fn concurrent_rand_write(
 		&self,
 		size: ReadableSize,
 		chunk_size: ReadableSize,
-		thread_cnt: u64,
+		parallelism: usize,
 	) -> anyhow::Result<BenchmarkResult> {
 		todo!()
 	}

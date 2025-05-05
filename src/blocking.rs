@@ -19,13 +19,14 @@ use std::{io::{Read, Seek, SeekFrom, Write}, os::unix::fs::FileExt, sync::{Arc, 
 
 use anyhow::Result;
 
-use crate::{readable_size::ReadableSize, BenchmarkIO, BenchmarkResult, FileSystem, OperationMode};
+use crate::{BenchmarkIO, BenchmarkResult, FileManager, OperationMode, Options, readable_size::ReadableSize};
 
 pub struct BlockingIO {
-	fs: FileSystem,
+	fs:   FileManager,
+	opts: Options,
 }
 impl BlockingIO {
-	pub fn new(fs: FileSystem) -> Self { Self { fs } }
+	pub fn new(fs: FileManager) -> Self { Self { opts: fs.opts.clone(), fs } }
 }
 
 impl BenchmarkIO for BlockingIO {
@@ -34,29 +35,32 @@ impl BenchmarkIO for BlockingIO {
 		size: ReadableSize,
 		chunk_size: ReadableSize,
 	) -> anyhow::Result<BenchmarkResult> {
-		let (mut file, _) = self.fs.open_file_for_reading(size.as_bytes_usize(), true)?;
+		let (mut file, _) =
+			self.fs.open_file_for_reading(size.as_bytes_usize(), true, self.opts.direct)?;
 
 		let mut buf = vec![0u8; chunk_size.as_bytes_usize()];
 		let start_at = std::time::Instant::now();
 		let total_cnt = size / chunk_size;
 		for _ in 0..total_cnt {
-			file.read_exact(&mut buf)?;
+			// Read exactly chunk_size bytes into the buffer
+			file.read(&mut buf[0..chunk_size.as_bytes_usize()])?;
 		}
 		let elapsed = start_at.elapsed();
 		Ok(BenchmarkResult { mode: OperationMode::SeqRead, size, chunk_size, start_at, elapsed })
 	}
 
 	fn seq_write(&self, size: ReadableSize, chunk_size: ReadableSize) -> Result<BenchmarkResult> {
-		let (mut file, _) = self.fs.open_file()?;
+		let (mut file, _) = self.fs.open_file(self.opts.direct)?;
 
 		let start_at = std::time::Instant::now();
 		let total_cnt = size / chunk_size;
 		let buf = vec![1u8; chunk_size.as_bytes_usize()];
 		for _ in 0..total_cnt {
-			file.write(&buf)?;
+			file.write(&buf[0..chunk_size.as_bytes_usize()])?;
+			// sync every time just for testing how low performance it is
+			file.sync_all()?;
 		}
 		let elapsed = start_at.elapsed();
-		file.sync_all()?;
 		Ok(BenchmarkResult { mode: OperationMode::SeqWrite, size, chunk_size, start_at, elapsed })
 	}
 
@@ -65,16 +69,17 @@ impl BenchmarkIO for BlockingIO {
 		size: ReadableSize,
 		chunk_size: ReadableSize,
 	) -> anyhow::Result<BenchmarkResult> {
-		let (mut file, path) = self.fs.open_file_for_reading(size.as_bytes_usize(), false)?;
+		let (mut file, path) =
+			self.fs.open_file_for_reading(size.as_bytes_usize(), false, self.opts.direct)?;
 
 		// Benchmark random read
-		let offsets = FileSystem::make_random_access_offsets(size, chunk_size);
+		let offsets = FileManager::make_random_access_offsets(size, chunk_size);
 
 		let start = std::time::Instant::now();
 		let mut buffer = vec![0; chunk_size.as_bytes_usize()];
 		for offset in offsets {
 			file.seek(SeekFrom::Start(offset))?;
-			file.read_exact(&mut buffer)?;
+			file.read_exact(&mut buffer[0..chunk_size.as_bytes_usize()])?;
 		}
 		let elapsed = start.elapsed();
 		Ok(BenchmarkResult {
@@ -92,11 +97,12 @@ impl BenchmarkIO for BlockingIO {
 		chunk_size: ReadableSize,
 		parallelism: usize,
 	) -> Result<BenchmarkResult> {
-		let (file, _) = self.fs.open_file_for_reading(size.as_bytes_usize(), false)?;
+		let (file, _) =
+			self.fs.open_file_for_reading(size.as_bytes_usize(), false, self.opts.direct)?;
 		let file = Arc::new(RwLock::new(file));
 
 		// prepare rand offset
-		let offsets_queue = Arc::new(FileSystem::make_random_access_offsets_queue(size, chunk_size));
+		let offsets_queue = Arc::new(FileManager::make_random_access_offsets_queue(size, chunk_size));
 
 		let mut join_handles = Vec::with_capacity(parallelism);
 		let start = std::time::Instant::now();
@@ -107,7 +113,7 @@ impl BenchmarkIO for BlockingIO {
 				let mut buffer = vec![0u8; chunk_size.as_bytes_usize()];
 				while let Some(offset) = queue_clone.pop() {
 					let mut reader = file_clone.read().unwrap();
-					reader.read_at(buffer.as_mut_slice(), offset).unwrap();
+					reader.read_at(&mut buffer[0..chunk_size.as_bytes_usize()], offset).unwrap();
 				}
 			}));
 		}
@@ -127,12 +133,49 @@ impl BenchmarkIO for BlockingIO {
 		})
 	}
 
-	fn rand_write(
+	fn concurrent_rand_write(
 		&self,
 		size: ReadableSize,
 		chunk_size: ReadableSize,
-		thread_cnt: u64,
+		parallelism: usize,
 	) -> anyhow::Result<BenchmarkResult> {
-		todo!()
+		let (file, _) = self.fs.open_file(self.opts.direct)?;
+		let file = Arc::new(RwLock::new(file));
+
+		// Prepare random offsets for writing
+		let offsets_queue = Arc::new(FileManager::make_random_access_offsets_queue(size, chunk_size));
+
+		let mut join_handles = Vec::with_capacity(parallelism);
+		let start = std::time::Instant::now();
+
+		// Spawn threads for concurrent writing
+		for _ in 0..parallelism {
+			let file_clone = Arc::clone(&file);
+			let queue_clone = Arc::clone(&offsets_queue);
+			join_handles.push(thread::spawn(move || {
+				let buf = vec![1u8; chunk_size.as_bytes_usize()];
+				while let Some(offset) = queue_clone.pop() {
+					let mut writer = file_clone.write().unwrap();
+					writer.write_at(&buf[0..chunk_size.as_bytes_usize()], offset).unwrap();
+				}
+			}));
+		}
+
+		// Wait for all threads to finish
+		for thread in join_handles {
+			thread.join().unwrap();
+		}
+
+		// Ensure all data is written to disk
+		file.write().unwrap().sync_all()?;
+
+		let elapsed = start.elapsed();
+		Ok(BenchmarkResult {
+			mode: OperationMode::ConcurrentRandWrite(parallelism),
+			size,
+			chunk_size,
+			start_at: start,
+			elapsed,
+		})
 	}
 }

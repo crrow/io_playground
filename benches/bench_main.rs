@@ -21,5 +21,5 @@ use criterion::criterion_main;
 
 criterion_main! {
 		benchmarks::blocking::benches,
-		benchmarks::tokio::benches
+		// benchmarks::tokio::benches
 }

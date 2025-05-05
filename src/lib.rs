@@ -15,11 +15,12 @@
 // Copyright Crrow <hahadaxigua@gmail.com> and the IO Playground contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{fmt::{Display, Formatter}, fs::File, os::{fd::{AsFd, AsRawFd, OwnedFd}, unix::fs::OpenOptionsExt}, path::PathBuf, sync::Arc};
+use std::{cmp, fmt::{Display, Formatter}, fs::File, io::{BufWriter, Read, Seek, SeekFrom, Write}, os::{fd::{AsFd, AsRawFd, OwnedFd}, unix::fs::OpenOptionsExt}, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
+use bon::Builder;
 use clap::ValueEnum;
-use rand::{prelude::SliceRandom, random};
+use rand::{RngCore, prelude::SliceRandom, rand_core::block, random};
 use rustix::fs::{Mode, OFlags};
 use strum_macros::{AsRefStr, EnumIter, EnumString, FromRepr};
 
@@ -40,12 +41,13 @@ pub enum BenchmarkIOType {
 }
 
 impl BenchmarkIOType {
-	// pub const ALL: [Self; 3] = [Self::Blocking, Self::Rio, Self::Glommio];
-	pub const ALL: [Self; 2] = [Self::Blocking, Self::Rio];
+	pub const ALL: [Self; 3] = [Self::Blocking, Self::Rio, Self::Glommio];
 
-	pub fn new(self) -> Result<Box<dyn BenchmarkIO>> {
-		let opts = FileSystemOption::default();
-		let std_fs = FileSystem::new(opts)?;
+	// pub const ALL: [Self; 2] = [Self::Blocking, Self::Rio];
+	// pub const ALL: [Self; 1] = [Self::Glommio];
+
+	pub fn new(self, opts: Options) -> Result<Box<dyn BenchmarkIO>> {
+		let std_fs = FileManager::new(opts.clone())?;
 		match self {
 			BenchmarkIOType::Blocking => {
 				let b = BlockingIO::new(std_fs);
@@ -60,6 +62,23 @@ impl BenchmarkIOType {
 	}
 }
 
+#[derive(Debug, Clone, Builder)]
+pub struct Options {
+	pub direct:  bool,
+	pub dir:     PathBuf,
+	pub cleanup: bool,
+}
+
+impl Default for Options {
+	fn default() -> Self {
+		Self {
+			direct:  false,
+			dir:     std::env::home_dir().unwrap().join("io_playground"),
+			cleanup: true,
+		}
+	}
+}
+
 pub trait BenchmarkIO {
 	fn seq_read(&self, size: ReadableSize, chunk_size: ReadableSize) -> Result<BenchmarkResult>;
 	fn seq_write(&self, size: ReadableSize, chunk_size: ReadableSize) -> Result<BenchmarkResult>;
@@ -70,11 +89,11 @@ pub trait BenchmarkIO {
 		chunk_size: ReadableSize,
 		parallelism: usize,
 	) -> Result<BenchmarkResult>;
-	fn rand_write(
+	fn concurrent_rand_write(
 		&self,
 		size: ReadableSize,
 		chunk_size: ReadableSize,
-		thread_cnt: u64,
+		parallelism: usize,
 	) -> Result<BenchmarkResult>;
 }
 
@@ -84,7 +103,7 @@ pub enum OperationMode {
 	SeqWrite,
 	RandRead,
 	ConcurrentRandRead(usize),
-	RandWrite,
+	ConcurrentRandWrite(usize),
 }
 
 #[derive(Debug)]
@@ -98,6 +117,7 @@ pub struct BenchmarkResult {
 
 impl Display for BenchmarkResult {
 	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+		// Calculate throughput in MiB/s
 		let mut megabytes_per_second = self.size.as_bytes() as u64 / self.elapsed.as_micros() as u64;
 		// Round to two significant digits.
 		if megabytes_per_second > 100 {
@@ -107,66 +127,98 @@ impl Display for BenchmarkResult {
 			megabytes_per_second = megabytes_per_second / 10 * 10;
 		}
 
+		// Calculate number of operations based on size and chunk size
+		let num_operations = self.size / self.chunk_size;
+
+		// Calculate average latency per operation
+		// For concurrent operations, divide by parallelism to get per-thread latency
+		let avg_latency = match self.mode {
+			OperationMode::ConcurrentRandRead(p) | OperationMode::ConcurrentRandWrite(p) => {
+				// For concurrent operations, calculate per-thread latency
+				self.elapsed.as_micros() as u64 / (num_operations / p as u64)
+			}
+			_ => {
+				// For sequential operations, calculate per-operation latency
+				self.elapsed.as_micros() as u64 / num_operations
+			}
+		};
+
 		write!(
 			f,
-			"mode: {:?}, size: {}, chunk_size: {}, throughput: {} MiB/s",
-			self.mode, self.size, self.chunk_size, megabytes_per_second
+			"mode: {:?}, size: {}, chunk_size: {}, throughput: {} MiB/s, avg_latency: {} us/op",
+			self.mode, self.size, self.chunk_size, megabytes_per_second, avg_latency
 		)
 	}
 }
 
-#[derive(Debug, Clone)]
-pub struct FileSystemOption {
-	direct:     bool,
-	dir:        PathBuf,
-	thread_cnt: u64,
+pub struct FileManager {
+	pub opts: Options,
 }
 
-impl Default for FileSystemOption {
-	fn default() -> Self {
-		Self {
-			direct:     false,
-			dir:        std::env::home_dir().unwrap().join("io_playground"),
-			thread_cnt: 0,
-		}
-	}
-}
-
-pub struct FileSystem {
-	pub opts: FileSystemOption,
-}
-
-impl FileSystem {
-	pub fn new(opts: FileSystemOption) -> Result<Self> {
+impl FileManager {
+	pub fn new(opts: Options) -> Result<Self> {
 		std::fs::create_dir_all(&opts.dir)?;
 		Ok(Self { opts })
 	}
 
-	pub fn open_file(&self) -> Result<(File, PathBuf)> {
+	pub fn open_file(&self, direct: bool) -> Result<(File, PathBuf)> {
 		let path = self.generate_file_path();
 		let mut opts = std::fs::OpenOptions::new();
 		opts.read(true).write(true).create(true);
-		if self.opts.direct {
+		if direct {
 			opts.custom_flags(libc::O_DIRECT);
-		};
+		}
 		let file = opts.open(&path)?;
 
 		Ok((file, path))
 	}
 
-	pub fn open_file_for_reading(&self, file_size: usize, seq: bool) -> Result<(File, PathBuf)> {
-		let (file, path) = self.open_file()?;
+	fn make_random_file(&self, file_size: usize) -> Result<PathBuf> {
+		let path = self.generate_file_path();
+		let mut file = std::fs::OpenOptions::new()
+			.custom_flags(libc::O_DIRECT)
+			.read(true)
+			.write(true)
+			.create(true)
+			.open(&path)?;
 		let mode = rustix::fs::FallocateFlags::empty();
 		rustix::fs::fallocate(file.as_fd(), mode, 0, file_size as u64)?;
+		rustix::fs::fadvise(file.as_fd(), 0, file_size as u64, rustix::fs::Advice::Sequential)?;
+		let mut rng = rand::rng();
+
+		const BLOCK_SIZE: usize = 4 << 20;
+		let mut buffer = [0; BLOCK_SIZE];
+		rng.fill_bytes(&mut buffer);
+		let block_cnt = file_size / BLOCK_SIZE;
+		for _ in 0..block_cnt {
+			file.write_all(&buffer)?;
+		}
+		file.sync_all()?;
+		Ok(path)
+	}
+
+	pub fn open_file_for_reading(
+		&self,
+		file_size: usize,
+		seq: bool,
+		direct: bool,
+	) -> Result<(File, PathBuf)> {
+		let path = self.make_random_file(file_size)?;
+		let mut opts = std::fs::OpenOptions::new();
+		opts.read(true).write(true).create(false);
+		if direct {
+			opts.custom_flags(libc::O_DIRECT);
+		}
+		let file = opts.open(&path)?;
 		let advice = if seq { rustix::fs::Advice::Sequential } else { rustix::fs::Advice::Random };
 		rustix::fs::fadvise(file.as_fd(), 0, file_size as u64, advice)?;
 		Ok((file, path))
 	}
 
-	pub fn open_fd(&self) -> Result<OwnedFd> {
+	pub fn open_fd(&self, direct: bool) -> Result<OwnedFd> {
 		let path = self.generate_file_path();
-		let mut flags = OFlags::RWMODE | OFlags::DIRECT | OFlags::CREATE;
-		if self.opts.direct {
+		let mut flags = OFlags::RWMODE | OFlags::CREATE;
+		if direct {
 			flags |= OFlags::DIRECT;
 		}
 
@@ -181,7 +233,7 @@ impl FileSystem {
 
 	pub fn make_random_access_offsets(size: ReadableSize, chunk_size: ReadableSize) -> Vec<u64> {
 		// prepare rand offset
-		let mut rng = rand::thread_rng();
+		let mut rng = rand::rng();
 		let mut offsets =
 			(0..size / chunk_size).into_iter().map(|e| e * chunk_size.as_bytes()).collect::<Vec<u64>>();
 		offsets.shuffle(&mut rng);
@@ -201,6 +253,10 @@ impl FileSystem {
 	}
 }
 
-impl Drop for FileSystem {
-	fn drop(&mut self) { std::fs::remove_dir_all(&self.opts.dir).unwrap(); }
+impl Drop for FileManager {
+	fn drop(&mut self) {
+		if self.opts.cleanup {
+			std::fs::remove_dir_all(&self.opts.dir).unwrap();
+		}
+	}
 }

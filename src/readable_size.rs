@@ -19,7 +19,7 @@
 
 use std::{fmt::{self, Debug, Display, Write}, ops::{Add, Div, Mul, Rem, Sub}, str::FromStr};
 
-use serde::{de, de::{Unexpected, Visitor}, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de, de::{Unexpected, Visitor}};
 
 const UNIT: u64 = 1;
 

@@ -15,9 +15,11 @@
 // Copyright Crrow <hahadaxigua@gmail.com> and the IO Playground contributors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use io_playground::{build_info, readable_size::ReadableSize, BenchmarkIOType};
+use io_playground::{BenchmarkIOType, Options, build_info, readable_size::ReadableSize};
 
 #[derive(Debug, Parser)]
 #[clap(
@@ -62,6 +64,16 @@ Examples:
 io_playground write
 ")]
 struct WriteArgs {
+	/// The directory to store the file
+	#[arg(short, long, group = "input", default_value = "io_playground")]
+	dir:     PathBuf,
+	/// Whether to use direct I/O
+	#[arg(short, long, group = "input", default_value = "true")]
+	direct:  bool,
+	/// Whether to cleanup the file after the test
+	#[arg(long, group = "input", default_value = "false")]
+	cleanup: bool,
+
 	/// The size of the file to write
 	#[arg(short, long, group = "input", default_value = "1GiB")]
 	size:       ReadableSize,
@@ -73,9 +85,15 @@ struct WriteArgs {
 	mode:       BenchmarkIOType,
 }
 
+impl From<&WriteArgs> for Options {
+	fn from(args: &WriteArgs) -> Self {
+		Options { direct: args.direct, dir: args.dir.clone(), cleanup: args.cleanup }
+	}
+}
+
 impl WriteArgs {
 	fn run(self) -> Result<()> {
-		let harness = self.mode.new()?;
+		let harness = self.mode.new(Options::from(&self))?;
 		let br = harness.seq_write(self.size, self.chunk_size)?;
 		println!("{}", br);
 		Ok(())
@@ -92,27 +110,47 @@ Examples:
 io_playground bench
 ")]
 struct BenchArgs {
+	/// The directory to store the file
+	#[arg(short, long, group = "input", default_value = "io_playground")]
+	dir:         PathBuf,
+	/// Whether to use direct I/O
+	#[arg(short, long, group = "input", default_value = "true")]
+	direct:      bool,
+	/// Whether to cleanup the file after the test
+	#[arg(short, long, group = "input", default_value = "true")]
+	cleanup:     bool,
 	/// The size of the file to write
 	#[arg(short, long, group = "input", default_value = "1GiB")]
-	size:       ReadableSize,
+	size:        ReadableSize,
 	/// The size of the chunk to write
 	#[arg(short, long, group = "input", default_value = "1MiB")]
-	chunk_size: ReadableSize,
+	chunk_size:  ReadableSize,
+	/// The number of threads to use
+	#[arg(short, long, group = "input", default_value = "4")]
+	parallelism: usize,
+}
+
+impl From<&BenchArgs> for Options {
+	fn from(args: &BenchArgs) -> Self {
+		Options { direct: args.direct, dir: args.dir.clone(), cleanup: args.cleanup }
+	}
 }
 
 impl BenchArgs {
 	fn run(self) -> Result<()> {
 		for mode in BenchmarkIOType::ALL {
 			let mode_name = mode.as_ref();
-			let harness = mode.new()?;
+			let harness = mode.new(Options::from(&self))?;
 			let br = harness.seq_write(self.size, self.chunk_size)?;
 			println!("{mode_name}, {}", br);
 			let br = harness.seq_read(self.size, self.chunk_size)?;
 			println!("{mode_name}, {}", br);
 			let br = harness.rand_read(self.size, self.chunk_size)?;
 			println!("{mode_name}, {}", br);
-			let br = harness.concurrent_rand_read(self.size, self.chunk_size, 4)?;
-			println!("{mode_name}, {}", br);
+			// let br = harness.concurrent_rand_read(self.size, self.chunk_size,
+			// self.parallelism)?; println!("{mode_name}, {}", br);
+			// let br = harness.concurrent_rand_write(self.size, self.chunk_size,
+			// self.parallelism)?; println!("{mode_name}, {}", br);
 		}
 		Ok(())
 	}

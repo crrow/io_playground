@@ -15,11 +15,57 @@
 // Copyright Crrow <hahadaxigua@gmail.com> and the IO Playground contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use criterion::{criterion_group, Criterion};
+use std::time::Duration;
 
-criterion_group!(benches, thread_pool_write);
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
+use io_playground::{BenchmarkIO, readable_size::ReadableSize};
+use tokio::runtime::Runtime;
 
-fn thread_pool_write(c: &mut Criterion) {
+// Reuse configurations from blocking benchmarks
+use super::blocking::{CHUNK_SIZES, MEASUREMENT_TIME, SAMPLE_SIZE, TOTAL_SIZE, WARM_UP_TIME};
 
-	todo!()
+criterion_group! {
+		name = benches;
+		config = Criterion::default()
+				.sample_size(SAMPLE_SIZE)
+				.warm_up_time(WARM_UP_TIME)
+				.measurement_time(MEASUREMENT_TIME);
+		targets = async_write, async_read
+}
+
+/// Benchmark async sequential write operations with different chunk sizes
+fn async_write(c: &mut Criterion) {
+	let bio = io_playground::BenchmarkIOType::Rio.new().expect("Failed to create Rio IO instance");
+
+	let mut group = c.benchmark_group("rio::write");
+	group.throughput(Throughput::Bytes(TOTAL_SIZE.as_bytes()));
+
+	for size in CHUNK_SIZES.iter() {
+		group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+			b.iter(|| {
+				bio.seq_write(TOTAL_SIZE, size).expect("Failed to perform sequential write");
+			});
+		});
+	}
+	group.finish();
+}
+
+/// Benchmark async sequential read operations with different chunk sizes
+fn async_read(c: &mut Criterion) {
+	let bio = io_playground::BenchmarkIOType::Rio.new().expect("Failed to create Rio IO instance");
+
+	// Prepare test data
+	bio.seq_write(TOTAL_SIZE, ReadableSize::mb(1)).expect("Failed to prepare test data");
+
+	let mut group = c.benchmark_group("rio::read");
+	group.throughput(Throughput::Bytes(TOTAL_SIZE.as_bytes()));
+
+	for size in CHUNK_SIZES.iter() {
+		group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+			b.iter(|| {
+				bio.seq_read(TOTAL_SIZE, size).expect("Failed to perform sequential read");
+			});
+		});
+	}
+	group.finish();
 }
